@@ -34,7 +34,7 @@ POSITIONS_PER_SIGNAL = 3
 ATR_PERIOD = 14
 SL_ATR_MULT = 2.0       # SL = 2x ATR
 MAGIC_BASE = 555555      # Different magic from main bot to avoid conflicts
-PROFIT_TARGET = 9.0      # Close all at $9 combined profit
+PROFIT_TARGET = 15.0     # Close all at $15 combined profit ($5 per position)
 
 # ─── SYMBOL MAPPING ───
 SYMBOL_MAP = {
@@ -531,6 +531,11 @@ def main():
     log.info(f"Settings: {POSITIONS_PER_SIGNAL} positions, {RISK_PERCENT}% risk, SL={SL_ATR_MULT}x ATR")
     
     # Run bot
+    # Add profit monitor as background task
+    async def post_init(application):
+        asyncio.create_task(profit_monitor())
+    
+    app.post_init = post_init
     app.run_polling()
 
 

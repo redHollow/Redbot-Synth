@@ -22,11 +22,35 @@ import json
 import os
 
 # ─── CONFIG ───
-MAGIC_NUMBER = 2463100  # Must match your EA's magic number
+MAGIC_BASE = 234567  # Base magic number from EA
+VIP_MAGIC_BASE = 555555  # Base magic for VIP signal copier
 SYMBOLS = [
-    "GainX 400", "GainX 600", "GainX 800", "GainX 999",
-    "PainX 400", "PainX 600", "PainX 800", "PainX 999"
+    "GainX 400", "GainX 600", "GainX 800", "GainX 999", "GainX 1200",
+    "PainX 400", "PainX 600", "PainX 800", "PainX 999", "PainX 1200",
+    "FX Vol 20", "FX Vol 40", "FX Vol 60", "FX Vol 80", "FX Vol 99",
+    "SFX Vol 20", "SFX Vol 40", "SFX Vol 60", "SFX Vol 80", "SFX Vol 99",
+    "Break X 600",
 ]
+
+def compute_magic(symbol, base=MAGIC_BASE):
+    """Replicate the EA's magic number calculation: base + sum of char*pos"""
+    magic = base
+    for i, ch in enumerate(symbol):
+        magic += ord(ch) * (i + 1)
+    return magic
+
+# Pre-compute all valid magic numbers (both RedBot and VIP)
+VALID_MAGICS = set()
+REDBOT_MAGICS = set()
+VIP_MAGICS = set()
+for s in SYMBOLS:
+    rm = compute_magic(s, MAGIC_BASE)
+    vm = compute_magic(s, VIP_MAGIC_BASE)
+    REDBOT_MAGICS.add(rm)
+    VIP_MAGICS.add(vm)
+    VALID_MAGICS.add(rm)
+    VALID_MAGICS.add(vm)
+
 REPORT_FILE = "redbot_analysis.json"
 
 
@@ -54,10 +78,10 @@ def get_trade_history(days=7):
     df = pd.DataFrame(list(deals), columns=deals[0]._asdict().keys())
     
     # Filter to our EA's trades (entry out = closed trades)
-    df = df[(df['magic'] == MAGIC_NUMBER) & (df['entry'] == 1)]  # DEAL_ENTRY_OUT
+    df = df[(df['magic'].isin(VALID_MAGICS)) & (df['entry'] == 1)]  # DEAL_ENTRY_OUT
     
     if df.empty:
-        print(f"No RedBot trades found (magic={MAGIC_NUMBER})")
+        print(f"No RedBot trades found. Valid magics: {VALID_MAGICS}")
         return df
     
     df['time'] = pd.to_datetime(df['time'], unit='s')
@@ -66,6 +90,7 @@ def get_trade_history(days=7):
     df['day_of_week'] = df['time'].dt.day_name()
     df['win'] = df['profit'] > 0
     df['loss'] = df['profit'] < 0
+    df['source'] = df['magic'].apply(lambda m: 'VIP' if m in VIP_MAGICS else 'RedBot')
     
     return df
 
@@ -144,6 +169,49 @@ def symbol_profiler(df):
         print(f"  Max Consecutive Losses: {r['max_consec_loss']}")
     
     return results
+
+
+def source_analysis(df):
+    """Breakdown by RedBot vs VIP signals"""
+    print("\n" + "=" * 70)
+    print("  REDBOT vs VIP SIGNAL PERFORMANCE")
+    print("=" * 70)
+    
+    for source in ['RedBot', 'VIP']:
+        sdf = df[df['source'] == source]
+        if len(sdf) == 0:
+            print(f"\n  {source}: No trades")
+            continue
+        
+        total = len(sdf)
+        wins = sdf['win'].sum()
+        losses = sdf['loss'].sum()
+        wr = (wins / total * 100) if total > 0 else 0
+        net = sdf['profit'].sum()
+        avg_win = sdf[sdf['win']]['profit'].mean() if wins > 0 else 0
+        avg_loss = sdf[sdf['loss']]['profit'].mean() if losses > 0 else 0
+        
+        gross_win = sdf[sdf['win']]['profit'].sum() if wins > 0 else 0
+        gross_loss = abs(sdf[sdf['loss']]['profit'].sum()) if losses > 0 else 0.01
+        pf = gross_win / gross_loss if gross_loss > 0 else 999
+        
+        indicator = "+" if net > 0 else ""
+        print(f"\n  {source}:")
+        print(f"  {'─' * 50}")
+        print(f"  Trades: {total}  |  Wins: {int(wins)}  |  Losses: {int(losses)}")
+        print(f"  Win Rate: {wr:.1f}%  |  Profit Factor: {pf:.2f}")
+        print(f"  Net P&L: {indicator}${net:.2f}")
+        print(f"  Avg Win: ${avg_win:.2f}  |  Avg Loss: ${avg_loss:.2f}")
+        
+        # Per-symbol breakdown for this source
+        if len(sdf['symbol'].unique()) > 1:
+            print(f"\n  {source} by symbol:")
+            for sym in sdf['symbol'].unique():
+                ssdf = sdf[sdf['symbol'] == sym]
+                s_net = ssdf['profit'].sum()
+                s_wr = ssdf['win'].mean() * 100
+                s_ind = "+" if s_net > 0 else ""
+                print(f"    {sym:<15} {len(ssdf)} trades  WR:{s_wr:.0f}%  {s_ind}${s_net:.2f}")
 
 
 def time_analysis(df):
@@ -381,6 +449,7 @@ def run_analysis(days=7):
     
     # Run all analyses
     symbol_results = symbol_profiler(df)
+    source_analysis(df)
     time_analysis(df)
     day_of_week_analysis(df)
     daily_pnl_analysis(df)
@@ -417,10 +486,22 @@ if __name__ == "__main__":
     parser.add_argument('--days', type=int, default=7, help='Days of history to analyze')
     parser.add_argument('--live', action='store_true', help='Continuous monitoring mode')
     parser.add_argument('--interval', type=int, default=300, help='Seconds between updates in live mode')
-    parser.add_argument('--magic', type=int, default=MAGIC_NUMBER, help='EA magic number')
+    parser.add_argument('--magic', type=int, default=MAGIC_BASE, help='EA base magic number')
     
     args = parser.parse_args()
-    MAGIC_NUMBER = args.magic
+    MAGIC_BASE = args.magic
+    
+    # Recompute magics if base changed
+    VALID_MAGICS.clear()
+    REDBOT_MAGICS.clear()
+    VIP_MAGICS.clear()
+    for s in SYMBOLS:
+        rm = compute_magic(s, MAGIC_BASE)
+        vm = compute_magic(s, VIP_MAGIC_BASE)
+        REDBOT_MAGICS.add(rm)
+        VIP_MAGICS.add(vm)
+        VALID_MAGICS.add(rm)
+        VALID_MAGICS.add(vm)
     
     if args.live:
         live_monitor(args.interval)

@@ -26,15 +26,16 @@ import logging
 from datetime import datetime
 
 # ─── TELEGRAM CONFIG ───
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Get from @BotFather
-ALLOWED_USERS = []  # Your Telegram user IDs. Empty = allow all. Find yours via @userinfobot
+BOT_TOKEN = "8777869857:AAECy0wSHRDlIf4Z-NKblu_bJSdwkD5UOZw"  # Demo bot
+ALLOWED_USERS = [7718901010]  # Red's Telegram ID
 
 # ─── MT5 CONFIG ───
 RISK_PER_POSITION = 2.0  # Max loss per position as % of balance
 POSITIONS_PER_SIGNAL = 3
 SL_POINTS = 50           # Fixed SL distance in points
 MAGIC_BASE = 555555      # Different magic from main bot to avoid conflicts
-PROFIT_TARGET = 15.0     # Close all at $15 combined profit ($5 per position)
+PROFIT_TARGET_PCT = 3.0   # TP per position as % of balance (matches EA)
+PROFIT_TARGET = None      # Calculated dynamically from balance
 
 # ─── DEMO RELAY CONFIG ───
 RELAY_ENABLED = False
@@ -260,10 +261,9 @@ MAX_SPREAD_POINTS = 5.0    # Skip if spread is too wide
 SKIP_AFTER_LOSS = True     # Skip symbol for the day after first loss
 
 # Track daily losses per symbol
-daily_symbol_losses = {}   # {"GainX 400": {"date": "2026-04-20", "losses": 1}}
+daily_symbol_losses = {}
 
 def check_symbol_blocked(symbol):
-    """Check if symbol is blocked for today due to a loss"""
     if not SKIP_AFTER_LOSS:
         return False
     today = datetime.now().strftime("%Y-%m-%d")
@@ -274,7 +274,6 @@ def check_symbol_blocked(symbol):
     return False
 
 def record_symbol_loss(symbol):
-    """Record a loss on a symbol for today"""
     today = datetime.now().strftime("%Y-%m-%d")
     if symbol not in daily_symbol_losses or daily_symbol_losses[symbol]['date'] != today:
         daily_symbol_losses[symbol] = {'date': today, 'losses': 0}
@@ -289,9 +288,8 @@ def execute_signal(signal):
     
     # Sunday check
     if SKIP_SUNDAY and datetime.now().weekday() == 6:
-        return "BLOCKED: No trading on Sunday. Spreads are too wide."
+        return "BLOCKED: No trading on Sunday."
     
-    # Check if symbol is blocked after a loss today
     if check_symbol_blocked(symbol):
         return f"BLOCKED: {symbol} had a loss today. Skipping until tomorrow."
     
@@ -404,7 +402,9 @@ def check_profit_target():
     
     for sym, data in symbol_profits.items():
         signal_sets = max(1, len(data['tickets']) // POSITIONS_PER_SIGNAL)
-        scaled_target = PROFIT_TARGET * signal_sets
+        bal = mt5.account_info().balance
+        per_set_target = bal * (PROFIT_TARGET_PCT / 100.0) * POSITIONS_PER_SIGNAL
+        scaled_target = per_set_target * signal_sets
         if data['profit'] >= scaled_target:
             log.info(f"VIP PROFIT TARGET: {sym} +${data['profit']:.2f} (target ${scaled_target:.2f} for {signal_sets} sets)")
             for ticket in data['tickets']:
@@ -668,7 +668,9 @@ async def profit_monitor():
                 # Check profit target per symbol - scales with number of signal sets
                 for sym, data in symbol_profits.items():
                     signal_sets = max(1, data['count'] // POSITIONS_PER_SIGNAL)
-                    scaled_target = PROFIT_TARGET * signal_sets
+                    bal = mt5.account_info().balance
+                    per_set_target = bal * (PROFIT_TARGET_PCT / 100.0) * POSITIONS_PER_SIGNAL
+                    scaled_target = per_set_target * signal_sets
                     if data['profit'] >= scaled_target:
                         log.info(f"VIP PROFIT TARGET: {sym} +${data['profit']:.2f} (target ${scaled_target:.2f} for {signal_sets} sets)")
                         
@@ -752,7 +754,7 @@ def main():
     app.add_handler(MessageHandler(filters.COMMAND, lambda u, c: handle_message(u, c)))
     
     log.info("Bot ready. Forward VIP signals to execute trades.")
-    log.info(f"Settings: {POSITIONS_PER_SIGNAL} positions, {RISK_PER_POSITION}% risk/pos, SL={SL_POINTS}pts, TP=${PROFIT_TARGET}")
+    log.info(f"Settings: {POSITIONS_PER_SIGNAL} positions, {RISK_PER_POSITION}% risk/pos, SL={SL_POINTS}pts, TP={PROFIT_TARGET_PCT}%/pos")
     
     # Run bot
     # Add profit monitor as background task

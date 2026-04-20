@@ -29,7 +29,7 @@ SYMBOLS = [
     "PainX 400", "PainX 600", "PainX 800", "PainX 999", "PainX 1200",
     "FX Vol 20", "FX Vol 40", "FX Vol 60", "FX Vol 80", "FX Vol 99",
     "SFX Vol 20", "SFX Vol 40", "SFX Vol 60", "SFX Vol 80", "SFX Vol 99",
-    "Break X 600",
+    "BreakX 600", "BreakX 1200", "BreakX 1800",
 ]
 
 def compute_magic(symbol, base=MAGIC_BASE):

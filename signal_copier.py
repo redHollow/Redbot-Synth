@@ -37,7 +37,7 @@ MAGIC_BASE = 555555      # Different magic from main bot to avoid conflicts
 PROFIT_TARGET = 15.0     # Close all at $15 combined profit ($5 per position)
 
 # ─── DEMO RELAY CONFIG ───
-RELAY_ENABLED = True
+RELAY_ENABLED = False
 RELAY_URL = "http://DEMO_VPS_IP:5555"  # Replace with demo VPS IP
 RELAY_SECRET = "redbot_relay_2026"
 
@@ -97,9 +97,15 @@ SYMBOL_MAP = {
     "sfx 80": "SFX Vol 80",
     "sfx 99": "SFX Vol 99",
     # Break indices
-    "break 600": "Break X 600",
-    "break x 600": "Break X 600",
-    "breakx 600": "Break X 600",
+    "break 600": "BreakX 600",
+    "break x 600": "BreakX 600",
+    "breakx 600": "BreakX 600",
+    "break 1200": "BreakX 1200",
+    "break x 1200": "BreakX 1200",
+    "breakx 1200": "BreakX 1200",
+    "break 1800": "BreakX 1800",
+    "break x 1800": "BreakX 1800",
+    "breakx 1800": "BreakX 1800",
 }
 
 # Direction defaults based on symbol type
@@ -110,7 +116,7 @@ DEFAULT_DIRECTION = {
 }
 
 # Symbols that switch direction - direction MUST be in signal
-SWITCHING_SYMBOLS = ["FX Vol", "SFX Vol", "Break X"]
+SWITCHING_SYMBOLS = ["FX Vol", "SFX Vol", "BreakX"]
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger("SignalCopier")
@@ -370,8 +376,10 @@ def check_profit_target():
         symbol_profits[sym]['tickets'].append(pos.ticket)
     
     for sym, data in symbol_profits.items():
-        if data['profit'] >= PROFIT_TARGET:
-            log.info(f"VIP PROFIT TARGET: {sym} +${data['profit']:.2f}")
+        signal_sets = max(1, len(data['tickets']) // POSITIONS_PER_SIGNAL)
+        scaled_target = PROFIT_TARGET * signal_sets
+        if data['profit'] >= scaled_target:
+            log.info(f"VIP PROFIT TARGET: {sym} +${data['profit']:.2f} (target ${scaled_target:.2f} for {signal_sets} sets)")
             for ticket in data['tickets']:
                 pos = mt5.positions_get(ticket=ticket)
                 if pos and len(pos) > 0:
@@ -626,10 +634,12 @@ async def profit_monitor():
                 
                 open_vip_tickets = current_tickets
                 
-                # Check profit target per symbol
+                # Check profit target per symbol - scales with number of signal sets
                 for sym, data in symbol_profits.items():
-                    if data['profit'] >= PROFIT_TARGET:
-                        log.info(f"VIP PROFIT TARGET: {sym} +${data['profit']:.2f}")
+                    signal_sets = max(1, data['count'] // POSITIONS_PER_SIGNAL)
+                    scaled_target = PROFIT_TARGET * signal_sets
+                    if data['profit'] >= scaled_target:
+                        log.info(f"VIP PROFIT TARGET: {sym} +${data['profit']:.2f} (target ${scaled_target:.2f} for {signal_sets} sets)")
                         
                         # Close all positions for this symbol
                         for ticket in data['tickets']:

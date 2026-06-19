@@ -15,12 +15,20 @@ input double RiskPerPosition   = 2.0;      // Max loss as % of balance
 input double MaxLotSize        = 0.50;
 input double MinLotSize        = 0.01;
 
-input group "=== ATR SL/TP (H1 ATR) ==="
+input group "=== ATR SL/TP (H1 ATR — Sniper Mode) ==="
 input int    ATR_Period        = 14;
 input double SL_ATR_Mult      = 1.5;      // SL = H1 ATR x this (with bias)
 input double TP_RR_Ratio      = 1.5;      // TP = SL x this (with bias) → 1.5x1.5 = 2.25x ATR
 input double SL_ATR_Against   = 0.75;     // SL = H1 ATR x this (against bias)
 input double TP_ATR_Against   = 1.0;      // TP = H1 ATR x this (against bias)
+
+input group "=== Hybrid Mode (ADX Auto-Switch) ==="
+input bool   UseHybridMode    = true;
+input int    ADX_Period        = 14;
+input double ADX_Sniper_Thresh = 25.0;    // Above this = sniper mode (trending)
+input double ADX_Scalp_Thresh  = 20.0;    // Below this = scalp mode (choppy)
+input double ScalpProfitTarget = 15.0;    // $15 total profit target in scalp mode
+input double ScalpSL_ATR_Mult  = 1.5;     // Scalp SL = M5 ATR x this
 
 input group "=== BE Protection & Trailing ==="
 input bool   UseBELock         = true;
@@ -104,6 +112,7 @@ int h1MaxZones = 20;
 int handleATR_M5, handleStoch;
 int handleATR_H1;
 int handleD1_EMA_Fast, handleD1_EMA_Mid;
+int handleADX_H1;
 double atrM5[], stochMain[], stochSignal[];
 double atrH1[];
 double d1EmaFast[], d1EmaMid[];
@@ -130,6 +139,9 @@ bool symbolBlockedToday = false;
 
 string mtfD1Status = "?";
 string lastSignalType = "";
+double adxH1[];
+int    currentMode = 0;   // 0 = sniper, 1 = scalp
+string modeLabel = "SNIPER";
 double dailyStartBalance = 0;
 datetime dailyResetDate = 0;
 
@@ -149,9 +161,13 @@ int OnInit()
    handleD1_EMA_Fast = iMA(_Symbol, PERIOD_D1, EMA_Fast, 0, MODE_EMA, PRICE_CLOSE);
    handleD1_EMA_Mid  = iMA(_Symbol, PERIOD_D1, EMA_Mid, 0, MODE_EMA, PRICE_CLOSE);
    
+   // ADX for hybrid mode detection
+   handleADX_H1 = iADX(_Symbol, PERIOD_H1, ADX_Period);
+   
    if(handleATR_M5 == INVALID_HANDLE || handleStoch == INVALID_HANDLE ||
       handleATR_H1 == INVALID_HANDLE ||
-      handleD1_EMA_Fast == INVALID_HANDLE || handleD1_EMA_Mid == INVALID_HANDLE)
+      handleD1_EMA_Fast == INVALID_HANDLE || handleD1_EMA_Mid == INVALID_HANDLE ||
+      (UseHybridMode && handleADX_H1 == INVALID_HANDLE))
    {
       Print("ERROR: Indicator init failed!");
       return(INIT_FAILED);
@@ -163,6 +179,7 @@ int OnInit()
    ArraySetAsSeries(atrH1, true);
    ArraySetAsSeries(d1EmaFast, true);
    ArraySetAsSeries(d1EmaMid, true);
+   ArraySetAsSeries(adxH1, true);
    ArrayResize(h1Zones, h1MaxZones);
    
    stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
@@ -210,11 +227,20 @@ int OnInit()
       activeMagic += StringGetCharacter(_Symbol, i) * (i + 1);
    
    // Print startup info
-   Print("=== RedBot v5.0 H1 SNIPER ===");
+   Print("=== RedBot v5.0 H1 HYBRID ===");
    Print("Symbol: ", _Symbol, " | Mode: ", symbolType);
    Print("Strategy: H1 Zones → M5 Entry → D1 Trend | BI-DIRECTIONAL");
-   Print("With bias:    SL ", DoubleToString(SL_ATR_Mult, 2), "x ATR | TP ", DoubleToString(SL_ATR_Mult * TP_RR_Ratio, 2), "x ATR (", DoubleToString(TP_RR_Ratio, 1), ":1)");
-   Print("Against bias: SL ", DoubleToString(SL_ATR_Against, 2), "x ATR | TP ", DoubleToString(TP_ATR_Against, 2), "x ATR");
+   if(UseHybridMode)
+   {
+      Print("HYBRID MODE: ADX > ", DoubleToString(ADX_Sniper_Thresh, 0), " = SNIPER | ADX < ", DoubleToString(ADX_Scalp_Thresh, 0), " = SCALP");
+      Print("Sniper: SL ", DoubleToString(SL_ATR_Mult, 1), "x H1 ATR | TP ", DoubleToString(TP_RR_Ratio, 1), ":1");
+      Print("Scalp:  SL ", DoubleToString(ScalpSL_ATR_Mult, 1), "x M5 ATR | TP $", DoubleToString(ScalpProfitTarget, 2));
+   }
+   else
+   {
+      Print("With bias:    SL ", DoubleToString(SL_ATR_Mult, 2), "x ATR | TP ", DoubleToString(SL_ATR_Mult * TP_RR_Ratio, 2), "x ATR (", DoubleToString(TP_RR_Ratio, 1), ":1)");
+      Print("Against bias: SL ", DoubleToString(SL_ATR_Against, 2), "x ATR | TP ", DoubleToString(TP_ATR_Against, 2), "x ATR");
+   }
    Print("Risk: ", DoubleToString(RiskPerPosition, 1), "% per position | 3 positions per signal");
    Print("BE Lock: ", DoubleToString(BE_Lock_Pct, 1), "%");
    if(UseTrailing)
@@ -247,6 +273,7 @@ void OnDeinit(const int reason)
    if(handleATR_H1 != INVALID_HANDLE) IndicatorRelease(handleATR_H1);
    if(handleD1_EMA_Fast != INVALID_HANDLE) IndicatorRelease(handleD1_EMA_Fast);
    if(handleD1_EMA_Mid != INVALID_HANDLE)  IndicatorRelease(handleD1_EMA_Mid);
+   if(handleADX_H1 != INVALID_HANDLE)     IndicatorRelease(handleADX_H1);
    ObjectsDeleteAll(0, "RB_");
    Comment("");
    Print("RedBot v5.0 stopped. W:", winTrades, " L:", lossTrades);
@@ -315,9 +342,33 @@ void OnTick()
    CheckDailyReset();
    if(UseBELock) CheckBELock();
    if(UseTrailing) ManageTrailingStop();
+   if(UseHybridMode && currentMode == 1) CheckScalpProfitTarget();
    
    if(!IsNewBar()) return;
    if(!GetIndicatorData()) return;
+   
+   // Detect market mode via ADX
+   if(UseHybridMode && ArraySize(adxH1) > 0)
+   {
+      double adx = adxH1[0];
+      int prevMode = currentMode;
+      if(adx >= ADX_Sniper_Thresh)
+      {
+         currentMode = 0;
+         modeLabel = "SNIPER";
+      }
+      else if(adx <= ADX_Scalp_Thresh)
+      {
+         currentMode = 1;
+         modeLabel = "SCALP";
+      }
+      // Between thresholds: keep current mode
+      
+      if(currentMode != prevMode)
+         Print("MODE SWITCH: ", (currentMode == 0 ? "SNIPER" : "SCALP"), " (ADX:", DoubleToString(adx, 1), ")");
+   }
+   
+   
    
    // Scan H1 zones every bar
    ScanH1Zones();
@@ -399,6 +450,10 @@ bool GetIndicatorData()
    if(CopyBuffer(handleATR_H1, 0, 0, 3, atrH1) < 3) return false;
    if(CopyBuffer(handleD1_EMA_Fast, 0, 0, 3, d1EmaFast) < 3) return false;
    if(CopyBuffer(handleD1_EMA_Mid, 0, 0, 3, d1EmaMid) < 3) return false;
+   if(UseHybridMode)
+   {
+      if(CopyBuffer(handleADX_H1, 0, 0, 3, adxH1) < 3) return false;
+   }
    return true;
 }
 
@@ -699,7 +754,7 @@ void ExecuteTrade(ENUM_ORDER_TYPE orderType)
    double h1atr = atrH1[0];
    double entry = (orderType == ORDER_TYPE_BUY) ? ask : bid;
    
-   // H1 ATR-based SL and TP
+   // SL and TP based on current mode
    // Determine if trading with or against natural bias
    bool withBias = false;
    if(naturalBias == 1 && orderType == ORDER_TYPE_BUY) withBias = true;    // PainX BUY = with bias
@@ -707,19 +762,34 @@ void ExecuteTrade(ENUM_ORDER_TYPE orderType)
    else if(naturalBias == 0) withBias = true;  // Unknown symbol = treat as with bias
    
    double sld, tpd;
-   if(withBias)
+   string tradeMode;
+   
+   if(UseHybridMode && currentMode == 1)
    {
-      sld = h1atr * SL_ATR_Mult;
-      tpd = sld * TP_RR_Ratio;
+      // SCALP MODE — M5 ATR for SL, profit target handles exit
+      double m5atr = atrM5[1];
+      sld = m5atr * ScalpSL_ATR_Mult;
+      tpd = sld * 3.0;   // Wide TP as safety net, profit target closes earlier
+      tradeMode = "SCALP";
+      Print("SCALP MODE: M5 ATR=", DoubleToString(m5atr, 2), " SL:", DoubleToString(sld, 2), " (profit target $", DoubleToString(ScalpProfitTarget, 0), ")");
    }
    else
    {
-      sld = h1atr * SL_ATR_Against;
-      tpd = h1atr * TP_ATR_Against;
+      // SNIPER MODE — H1 ATR for SL/TP
+      if(withBias)
+      {
+         sld = h1atr * SL_ATR_Mult;
+         tpd = sld * TP_RR_Ratio;
+      }
+      else
+      {
+         sld = h1atr * SL_ATR_Against;
+         tpd = h1atr * TP_ATR_Against;
+      }
+      tradeMode = "SNIPER";
+      string biasLabel = withBias ? "WITH bias" : "AGAINST bias";
+      Print("SNIPER MODE: ", biasLabel, " | SL:", DoubleToString(sld, 2), " TP:", DoubleToString(tpd, 2));
    }
-   
-   string biasLabel = withBias ? "WITH bias" : "AGAINST bias";
-   Print("BIAS: ", biasLabel, " | SL:", DoubleToString(sld, 2), " TP:", DoubleToString(tpd, 2));
    
    double slP, tpP;
    if(orderType == ORDER_TYPE_BUY)
@@ -971,6 +1041,61 @@ void ManageTrailingStop()
 }
 
 //+------------------------------------------------------------------+
+//| Scalp Profit Target — close all at $15 combined                    |
+//+------------------------------------------------------------------+
+void CheckScalpProfitTarget()
+{
+   double totalProfit = 0;
+   int posCount = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(PositionGetSymbol(i) != _Symbol || PositionGetInteger(POSITION_MAGIC) != activeMagic) continue;
+      totalProfit += PositionGetDouble(POSITION_PROFIT);
+      posCount++;
+   }
+   if(posCount == 0) return;
+   
+   if(totalProfit >= ScalpProfitTarget)
+   {
+      Print("SCALP TARGET HIT: $", DoubleToString(totalProfit, 2), " >= $", DoubleToString(ScalpProfitTarget, 2));
+      // Close all positions
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
+      {
+         if(PositionGetSymbol(i) != _Symbol || PositionGetInteger(POSITION_MAGIC) != activeMagic) continue;
+         ulong ticket = PositionGetTicket(i);
+         long pt = PositionGetInteger(POSITION_TYPE);
+         double vol = PositionGetDouble(POSITION_VOLUME);
+         double ls = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+         double ml = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+         vol = MathFloor(vol / ls) * ls;
+         if(vol < ml) vol = ml;
+         
+         MqlTradeRequest rq = {};
+         MqlTradeResult rs = {};
+         rq.action = TRADE_ACTION_DEAL;
+         rq.position = ticket;
+         rq.symbol = _Symbol;
+         rq.volume = vol;
+         rq.deviation = 30;
+         rq.magic = activeMagic;
+         if(pt == POSITION_TYPE_BUY)
+         { rq.type = ORDER_TYPE_SELL; rq.price = SymbolInfoDouble(_Symbol, SYMBOL_BID); }
+         else
+         { rq.type = ORDER_TYPE_BUY; rq.price = SymbolInfoDouble(_Symbol, SYMBOL_ASK); }
+         
+         ENUM_ORDER_TYPE_FILLING fills[] = {ORDER_FILLING_IOC, ORDER_FILLING_FOK, ORDER_FILLING_RETURN};
+         for(int f = 0; f < 3; f++)
+         { rq.type_filling = fills[f]; if(OrderSend(rq, rs)) break; }
+      }
+      dailySymbolPnL += totalProfit;
+      profitBELocked = false;
+      string msg = "RBv5 SCALP TARGET $" + DoubleToString(totalProfit, 2) + " " + _Symbol;
+      if(EnablePopupAlert) Alert(msg);
+      if(EnablePushNotify) SendNotification(msg);
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Daily Reset                                                        |
 //+------------------------------------------------------------------+
 void CheckDailyReset()
@@ -1015,6 +1140,7 @@ void LogBarScan()
    else mtfD1Status = "BEAR";
    
    Print("SCAN #", totalBarsScanned,
+         " ", modeLabel,
          " Stoch:", DoubleToString(stochMain[1], 1),
          " H1z D:", dz, " S:", sz,
          " D1:", mtfD1Status,
@@ -1054,9 +1180,18 @@ void UpdateDashboard()
       else sz++;
    }
    
+   // Get ADX for display
+   string adxStr = "?";
+   double adxArr[];
+   ArraySetAsSeries(adxArr, true);
+   if(UseHybridMode && CopyBuffer(handleADX_H1, 0, 0, 1, adxArr) >= 1)
+      adxStr = DoubleToString(adxArr[0], 1);
+   
    string NL = "\n";
-   string info = "=== RedBot v5.0 SNIPER ===" + NL;
+   string info = "=== RedBot v5.0 HYBRID ===" + NL;
    info += "Mode: " + symbolType + NL;
+   if(UseHybridMode)
+      info += "Market: " + modeLabel + " (ADX:" + adxStr + ")" + NL;
    info += "Stoch: " + si + " | D1: " + mtfD1Status + NL;
    info += "H1 ATR: " + DoubleToString(h1atr, 2) + " Spread: " + DoubleToString(sp, 2) + NL;
    info += "H1 Zones: D:" + IntegerToString(dz) + " S:" + IntegerToString(sz) + NL;
@@ -1066,7 +1201,10 @@ void UpdateDashboard()
    info += "P/L: $" + DoubleToString(dailySymbolPnL, 2);
    if(symbolBlockedToday) info += " BLOCKED";
    info += NL;
-   info += "SL:" + DoubleToString(SL_ATR_Mult, 1) + "x | TP w/bias:" + DoubleToString(TP_RR_Ratio, 1) + "x ag:" + DoubleToString(SL_ATR_Against, 2) + "/" + DoubleToString(TP_ATR_Against, 2) + "x" + NL;
+   if(currentMode == 0)
+      info += "SNIPER: SL " + DoubleToString(SL_ATR_Mult, 1) + "x H1 | TP " + DoubleToString(TP_RR_Ratio, 1) + ":1" + NL;
+   else
+      info += "SCALP: SL " + DoubleToString(ScalpSL_ATR_Mult, 1) + "x M5 | TP $" + DoubleToString(ScalpProfitTarget, 0) + NL;
    info += "=========================";
    Comment(info);
 }
